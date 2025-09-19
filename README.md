@@ -1,17 +1,47 @@
 # Red Team infraestructura
 
 ---
-Recrearemos una infraestructura Red Team donde levantaremos un `Redirector`, un `C2` y tambien desplegaremos un `Servidor Openvpn`.
-* Esta infraestrutura es muy comun en operaciones Red Team donde se busca simular operaciones de atacantes reales
+Recrearemos una infraestructura Red Team donde levantaremos un `Redirector`, un `C2` y tambien desplegaremos un `Servidor Openvpn` mas una conexion VPN contratada.
+
+* Este tipo de infraestructura es comun en Operaciones Red Team, aunque pueden llegar a ser mas simples o por el contrario mucho mas complejas
+
+```mermaid
+flowchart LR
+    Victima["💻 Máquina Víctima (Implante Sliver)"]
+    Redirector["🔀 Redirector (socat)"]
+    ServidorC2["🖥️ Servidor Sliver C2"]
+    Operador["👤 Operador C2"]
+
+    %% Flujo principal
+    Victima -->|"Conexión Internet"| Redirector -->|"Reenvío de tráfico"| ServidorC2
+
+    %% Red VPN doble
+    subgraph VPNs ["Túnel de Doble VPN"]
+        direction LR
+        ServidorC2 -->|"Conexion VPN 1"| NordVPN["🌐 NordVPN"]
+        Operador -->|"Conexion VPN 1"| NordVPN
+        NordVPN --> OpenVPN["🔒 Servidor OpenVPN 10.10.10.0/24"]
+    end
+
+    %% Direcciones en la red interna
+    ServidorC2 <-->|"Conexion VPN 2 - IP interna 10.10.10.10"| OpenVPN
+    Operador <-->|"Conexion VPN 2 - IP interna 10.10.10.6"| OpenVPN
+
+    %% Administración
+    Operador -->|"Control Sliver 10.10.10.10:31337"| ServidorC2
+```
+
+
 ---
 
-![WhatsApp Image 2025-09-18 at 17 00 11](https://github.com/user-attachments/assets/fe68f064-1c3b-4c3b-948e-4a3ec20ee60e)
+
 
 ## Requisitos para el Despliegue de la infraestructura
 
 * VPS donde se levantara el servidor Openvpn
 * VPS donde desplegaremos el servidor Sliver C2
 * VPS donde implementaremos el redirector
+* VPN sin registros de log, ejemplo: nordvpn
 
 ### Despliegue del Servidor Openvpn
 
@@ -196,7 +226,8 @@ persist-tun
 remote-cert-tls server
 key-direction 1
 data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
-
+route-nopull # esta linea y la de abajo nos permitira concatenar la vpn de nordvpn y despues la del servidor openvpn
+route 10.10.10.0 255.255.255.0
 <ca>
 ----- contenido ca.crt -----
 </ca>
@@ -262,7 +293,27 @@ sudo apt update -y && sudo apt install openvpn -y && apt install golang-go -y
 ```bash
 curl https://sliver.sh/install | bash
 ```
+---
+instalacion y activacion del cliente vpn
 
+* Aqui dependera de cada uno si contratar un servicio vpn o saltarse este paso, en mi caso hago uso de `nordvpn` por lo que hacemos la instalacion y configuracion de la misma
+
+```bash
+sh <(curl -sSf https://downloads.nordcdn.com/apps/linux/install.sh)
+```
+```bash
+nordvpn login
+```
+* aqui nos dara una url para acceder por el navegador y autenticarnos
+
+<img width="1344" height="869" alt="image" src="https://github.com/user-attachments/assets/c823ce97-0d6b-4f37-878d-9714c421d28b" />
+
+Una vez autenticados volvemos a la terminal y activamos la vpn
+
+```bash
+nordvpn c Poland # nos conectamos a un servidor en Polonia por ejemplo
+```
+* continuamos con la configuracion del servidor Sliver
 ---
 
 Configuracion de sliver-server
@@ -314,7 +365,7 @@ deberiamos ver algo como:
 ```
 
 ---
-Conexion a la VPN
+Conexion a la VPN controlado por nosotros ( Servidor OpenVPN)
 
 ```bash
 sudo openvpn serverc2.ovpn &
@@ -330,13 +381,28 @@ Normalmente un atacante tiene de sistema base kali linux o parrot, por lo que la
 ```bash
 sudo apt install sliver openvpn -y
 ```
-con esta instalacion tendremos tanto el server o como el cliente, pero aqui nos interesa es el cliente sliver y para hacer la conexion con el servidor ya debemos contar con el archivo .cfg que se genero al crear el operador en el servidor C2, asi que primero nos conectamos a la vpn 
+con esta instalacion tendremos tanto el server o como el cliente, pero aqui nos interesa es el cliente sliver y para hacer la conexion con el servidor ya debemos contar con el archivo .cfg que se genero al crear el operador en el servidor C2, en este punto realizamos la misma configuracion de nordvpn que hicismos en el servidor Sliver C2 pero en la maquina atacante/operador
+
+```bash
+sh <(curl -sSf https://downloads.nordcdn.com/apps/linux/install.sh)
+```
+```bash
+nordvpn login
+```
+* aqui nos dara la url para acceder por el navegador y autenticarnos y una vez autenticados volvemos a la terminal y activamos la vpn
+
+```bash
+nordvpn c Spain # nos conectamos a un servidor en Espana por ejemplo
+```
+---
+
+Continuamos ahora con la conexion a la segunda VPN, esta vez la controlado por nosotros, es decir con OpenVPN
 
 ```bash
 openvpn operatorc2.ovpn # esto nos asignara una ip privada en la vpn tipo 10.10.10.9 desde donde el operador podra conectarse al servidor C2
 ```
 
-* Una vez conectados a la vpn pasamos a conectarnos al servidor C2
+* Una vez conectados a la vpn de OpenVPN pasamos a conectarnos al servidor C2
 
 ```bash
 sliver-client import operator.cfg # importamos el archivo .cfg que se genero al crear el operador en el servidor C2
@@ -359,22 +425,43 @@ Ya creado el implante sliver, lo cargamos en la maquina victima y lanzamos el bi
 
 <img width="2554" height="1080" alt="image" src="https://github.com/user-attachments/assets/a5e8f70a-01ab-451b-9f45-1baebd9cc2d9" />
 
-* La infraestructura a funcionado correctamente ya que hemos obtenido la conexion desde la maquina victima!
+* La infraestructura a funcionado correctamente ya que hemos obtenido la conexion desde la maquina victima!, hemos levantado una infraestructura `Zero Trust`, es decir, que no confiamos en ningun usuario ni tampoco en ningun punto del sistema, esto garantiza que si el server `OpenVPN` es comprometido por algun motivo, solo puedan llegar a ver las IP's de `Nordvpn` (Una capa mas de seguridad) y no las reales de `Server Sliver C2` ni mucho menos la del `Operador C2`
 
----
+```mermaid
+flowchart LR
+    Victima["💻 Máquina Víctima (Implante Sliver)"]
+    Redirector["🔀 Redirector (socat)"]
+    ServidorC2["🖥️ Servidor Sliver C2"]
+    Operador["👤 Operador C2"]
+
+    %% Flujo principal
+    Victima -->|"Conexión Internet"| Redirector -->|"Reenvío de tráfico"| ServidorC2
+
+    %% Red VPN doble
+    subgraph VPNs ["Túnel de Doble VPN"]
+        direction LR
+        ServidorC2 -->|"Conexion VPN 1"| NordVPN["🌐 NordVPN"]
+        Operador -->|"Conexion VPN 1"| NordVPN
+        NordVPN --> OpenVPN["🔒 Servidor OpenVPN 10.10.10.0/24"]
+    end
+
+    %% Direcciones en la red interna
+    ServidorC2 <-->|"Conexion VPN 2 - IP interna 10.10.10.10"| OpenVPN
+    Operador <-->|"Conexion VPN 2 - IP interna 10.10.10.6"| OpenVPN
+
+    %% Administración
+    Operador -->|"Control Sliver 10.10.10.10:31337"| ServidorC2
+```
+
 
 ## ✅ Ventajas de la infraestructura:
 
 * Ocultación del Servidor C2 Real: El redirector actúa como un punto intermedio, ocultando la IP real del servidor C2. Esto dificulta que los defensores rastreen la infraestructura maliciosa hasta el servidor principal.
 * Flexibilidad Geográfica: Puedes desplegar el redirector en una región diferente (ej. usando un VPS barato) para evadir bloqueos geográficos o perfiles de tráfico sospechoso.
 * Resistencia ante Takedowns: Si el redirector es descubierto y bloqueado, se puede reemplazar rápidamente sin afectar al servidor C2 principal (siempre que se cambie la dirección en el implante).
-* Protección contra Análisis de Tráfico: El uso de VPN (OpenVPN) encripta el tráfico entre el servidor C2 y el operador, dificultando la interceptación o el análisis por parte de terceros.
-* El operador no se conecta nunca directamente al Implante ni al Redirector, la única dirección IP "pública" expuesta en la comunicación con los implantes es la del Redirector. La IP del servidor C2 real está oculta detrás del redirector, y la IP del operador está oculta detrás de la VPN.
+* Protección contra Análisis de Tráfico: El uso de VPN (NordVPN + OpenVPN) encripta el tráfico entre el servidor C2, el operador y el propio servidor OpenVpn dificultando la interceptación o el análisis por parte de terceros.
+* El operador no se conecta nunca directamente al Implante ni al Redirector, la única dirección IP "pública" expuesta en la comunicación con los implantes es la del Redirector. La IP del servidor C2 y del operador estan ocultas por doble VPN
 
-Flujo seguro para el operador
-```bash
-Operador --> (VPN) --> Servidor Silver C2 <-- (Internet) <-- Redirector <-- (Internet) <-- Implante/Víctima
-```
 ## ❌ Desventajas de la infraestructura
 
 * Punto Único de Falla en el Redirector: Si el redirector cae (ej. suspensión del VPS), todos los implantes pierden conexión hasta que se restablezca o se actualice la dirección en los implantes.
@@ -386,7 +473,7 @@ Operador --> (VPN) --> Servidor Silver C2 <-- (Internet) <-- Redirector <-- (Int
 ## 🔒 Implicaciones de Seguridad para el Operador
 
 * Anonimato: La actividad del operador no puede ser rastreada directamente hasta su ubicación física o IP real desde el lado del objetivo o de un analista de blue team que esté monitorizando el tráfico de la víctima.
-* Protección contra Doxing/Ataques de Contrainteligencia: Si el equipo defensivo (Blue Team) logra comprometer el servidor C2, no encontrarán registros de conexión que expongan la IP real del operador, solo encontrarán la IP de la red VPN.
+* Protección contra Doxing/Ataques de Contrainteligencia: Si el equipo defensivo (Blue Team) logra comprometer el servidor C2, no encontrarán registros de conexión que expongan la IP real del operador, solo encontrarán la IP de la red OpenVPN, pero aun si llegaran a comprometer el servidor OpenVPN tampoco lograrian dar con la IP real del operador ni del C2 porque se ocultan detras de la VPN de NordVPN
 * Evita Bloqueos: La red objetivo no puede bloquear la IP del operador, porque nunca la ven.
 
 ## 🎯 Recomendaciones de Mejoras
